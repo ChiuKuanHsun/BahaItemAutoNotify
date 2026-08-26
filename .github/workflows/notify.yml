@@ -1,9 +1,11 @@
 name: BaHaNotify
 
 on:
-  schedule:
-    # 每 15 分鐘檢查一次（GitHub 排程有數分鐘誤差，屬正常現象）
-    - cron: "*/15 * * * *"
+  # 排程停用中：巴哈的 Cloudflare 對 GitHub 的資料中心 IP 出 Interactive
+  # Challenge（要人為點擊），自動化過不了，開著只會每 15 分鐘失敗寄信一次。
+  # 之後若換到住宅／行動 IP 的環境，或站方調整規則，再把下面兩行取消註解。
+  # schedule:
+  #   - cron: "*/15 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -40,14 +42,14 @@ jobs:
           cache: pip
 
       - name: 安裝套件
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-cloud.txt
 
       # Cloudflare Managed Challenge 要真的執行 JS，所以備援後端得開 Chromium
       - name: 快取 Playwright 瀏覽器
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements-cloud.txt') }}
 
       - name: 安裝 Chromium
         run: python -m playwright install --with-deps chromium

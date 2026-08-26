@@ -1,0 +1,4 @@
+# 資料中心 IP 才需要的重量級後端（GitHub Actions 用）
+-r requirements.txt
+curl_cffi>=0.7.0
+playwright>=1.47.0
