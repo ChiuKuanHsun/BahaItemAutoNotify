@@ -65,7 +65,9 @@ Actions → 「福利社商品推播」→ Run workflow。第一次會建立基�
 
 ```bash
 pip install -r requirements.txt
+python -m playwright install chromium    # 只有要用 playwright 後端才需要
 DRY_RUN=true DISCORD_WEBHOOK_URL=dummy python baha_fuli_notify.py   # 只印不送
+SCRAPER_BACKEND=playwright HEADLESS=false python baha_fuli_notify.py  # 看瀏覽器實際動作
 DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." python baha_fuli_notify.py
 ```
 
@@ -78,8 +80,10 @@ DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." python baha_fuli_noti
 | `NOTIFY_CHANGES` | `true` | 是否推播「異動」；只想收新品就設 `false` |
 | `DRY_RUN` | `false` | 只印出結果不送 Discord |
 | `MAX_PAGES` | `20` | 最多翻幾頁，防呆用 |
-| `SCRAPER_BACKEND` | `auto` | `auto`／`curl_cffi`／`requests`，抓取後端 |
+| `SCRAPER_BACKEND` | `auto` | `auto`／`curl_cffi`／`playwright`／`requests` |
 | `IMPERSONATE` | `chrome` | curl_cffi 模擬的瀏覽器指紋 |
+| `CHALLENGE_TIMEOUT_MS` | `45000` | 等 Cloudflare challenge 解完的上限 |
+| `HEADLESS` | `true` | 設 `false` 可在本機看瀏覽器實際跑什麼 |
 
 ## 手動執行選項
 
@@ -92,10 +96,23 @@ Actions → Run workflow 時可勾：
 
 - **排程會延遲**：GitHub 的 `schedule` 在尖峰時常延後數分鐘到十幾分鐘，屬正常現象；想更即時要改用常駐主機。
 - **repo 閒置 60 天排程會被停用**：本專案每次有更新就會 commit 快照，正常運作下不會觸發；真的被停用時 GitHub 會寄信，去 Actions 頁面按 enable 即可。
-- **Cloudflare 403**：`fuli.gamer.com.tw` 在 Cloudflare 後面，會依 IP 信譽 + TLS 指紋擋非瀏覽器
-  流量。GitHub Actions 是資料中心 IP，用普通 `requests` 打會直接吃 403，所以預設改用
-  `curl_cffi` 模擬 Chrome 的 TLS/HTTP2 指紋。若哪天連 curl_cffi 也被擋（log 會印出 403
-  的回應內容），可試著把 repo variable `IMPERSONATE` 換成 `chrome131`、`safari` 等其他
-  指紋；再不行就只能改用非資料中心 IP 的環境（自架 self-hosted runner、家裡的機器排程）。
+- **Cloudflare Managed Challenge**：`fuli.gamer.com.tw` 掛在 Cloudflare 後面。從家用 IP 連
+  完全不會被攔，但從 GitHub Actions 的資料中心 IP 連，會被丟一頁
+  `Enable JavaScript and cookies to continue` 的挑戰頁（HTTP 403，標題是巴哈的
+  「系統異常回報」樣板）。
+
+  所以抓取層是兩段式接力，`SCRAPER_BACKEND=auto` 會依序試：
+
+  1. **curl_cffi** — 模擬 Chrome 的 TLS/HTTP2 指紋，快、輕量。過得了指紋檢查，
+     但不會執行 JavaScript，所以過不了 Managed Challenge。
+  2. **playwright** — 開真的 headless Chromium 執行 challenge 的 JS，等它自動解完
+     跳轉回商品頁。慢（要多花十幾秒開瀏覽器），但這是唯一能過 JS challenge 的方式。
+
+  偵測到挑戰頁時**不會重試同一個後端**（重試沒意義），直接換下一個。
+
+  Playwright 也失敗的話，workflow 會把當下的**截圖與 HTML** 上傳成 artifact
+  （Actions 頁面下方 `challenge-debug-<run 編號>`），從截圖能直接看出是卡在
+  「驗證中」轉圈、還是被要求點選方塊。真的過不了就只能換非資料中心 IP 的環境
+  （self-hosted runner 或本機排程），但那需要電腦保持開機。
 - **只監控「現有商品」**（`history=0`）。想改監控歷史商品，把 `LIST_URL` 的 `history` 改成 `1`。
 - **網站改版時**：script 解析不到任何商品會直接 exit 1 並保留舊快照，不會把空狀態寫進去，也不會洗版。修 `parse_card()` 的 CSS selector 即可。

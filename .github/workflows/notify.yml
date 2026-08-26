@@ -27,7 +27,7 @@ concurrency:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -41,6 +41,16 @@ jobs:
 
       - name: 安裝套件
         run: pip install -r requirements.txt
+
+      # Cloudflare Managed Challenge 要真的執行 JS，所以備援後端得開 Chromium
+      - name: 快取 Playwright 瀏覽器
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: 安裝 Chromium
+        run: python -m playwright install --with-deps chromium
 
       - name: 重設狀態
         if: inputs.reset_state
@@ -58,6 +68,15 @@ jobs:
           SCRAPER_BACKEND: ${{ vars.SCRAPER_BACKEND || 'auto' }}
           IMPERSONATE: ${{ vars.IMPERSONATE || 'chrome' }}
         run: python baha_fuli_notify.py
+
+      - name: 上傳除錯檔
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: challenge-debug-${{ github.run_number }}
+          path: debug/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: 保存快照
         if: success() && !inputs.dry_run

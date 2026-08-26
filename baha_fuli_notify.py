@@ -24,6 +24,8 @@ STATE_FILE = Path(__file__).resolve().parent / "data" / "seen.json"
 
 MAX_PAGES = int(os.getenv("MAX_PAGES", "20"))
 REQUEST_TIMEOUT = 30
+# Cloudflare Managed Challenge 通常幾秒內解完，給寬一點的餘裕
+CHALLENGE_TIMEOUT = int(os.getenv("CHALLENGE_TIMEOUT_MS", "45000"))
 TPE = timezone(timedelta(hours=8))
 
 HEADERS = {
@@ -57,33 +59,34 @@ TYPE_COLORS = {
 DEFAULT_COLOR = 0x5865F2
 
 
+# Cloudflare Managed Challenge 頁的特徵字串（巴哈套了自己的樣板，但文案是 CF 的）
+CHALLENGE_MARKERS = (
+    "Enable JavaScript and cookies to continue",
+    "challenge-platform",
+    "cf-browser-verification",
+    "Just a moment",
+    "系統異常回報",
+)
+
+
+class BlockedError(RuntimeError):
+    """被 Cloudflare 擋下來。重試同一個後端沒意義，要換一個後端。"""
+
+
+def looks_like_challenge(html: str) -> bool:
+    return bool(html) and any(marker in html for marker in CHALLENGE_MARKERS)
+
+
 # --------------------------------------------------------------------------- #
 # 抓取與解析
 # --------------------------------------------------------------------------- #
-def build_scraper_session():
-    """建立抓取用的 session。
+def build_http_session(kind: str):
+    """建立 HTTP 抓取用的 session（不執行 JS 的那類後端）。"""
+    if kind == "curl_cffi":
+        from curl_cffi import requests as curl_requests
 
-    fuli.gamer.com.tw 掛在 Cloudflare 後面，會用 TLS 指紋 + IP 信譽判斷是不是
-    瀏覽器。用普通 requests 從 GitHub Actions（資料中心 IP）打會吃 403，
-    所以優先用 curl_cffi 模擬 Chrome 的 TLS/HTTP2 指紋。
-    """
-    backend = os.getenv("SCRAPER_BACKEND", "auto").lower()
+        return curl_requests.Session(impersonate=os.getenv("IMPERSONATE", "chrome"))
 
-    if backend in ("auto", "curl_cffi"):
-        try:
-            from curl_cffi import requests as curl_requests
-
-            session = curl_requests.Session(
-                impersonate=os.getenv("IMPERSONATE", "chrome")
-            )
-            print("抓取後端：curl_cffi（模擬 Chrome）")
-            return session
-        except ImportError:
-            if backend == "curl_cffi":
-                raise SystemExit("指定了 curl_cffi 後端但套件沒安裝")
-            print("::warning::curl_cffi 未安裝，退回 requests（雲端 IP 可能被 403）")
-
-    print("抓取後端：requests")
     session = requests.Session()
     # curl_cffi 會自帶與 TLS 指紋一致的 UA；requests 得自己補，否則直接 403
     session.headers["User-Agent"] = (
@@ -121,11 +124,23 @@ def fetch(url: str, session, retries: int = 3) -> str:
     for attempt in range(retries):
         try:
             resp = session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            # encoding 必須在讀 .text 之前設定，curl_cffi 讀過就不給改了
+            try:
+                resp.encoding = "utf-8"
+            except Exception:
+                pass
+            html = resp.text
+
             if resp.status_code >= 400:
-                print(f"::warning::{url} 回應 {resp.status_code}：{describe_error(resp.text)}")
+                print(f"::warning::{url} 回應 {resp.status_code}：{describe_error(html)}")
+                if looks_like_challenge(html):
+                    raise BlockedError("Cloudflare challenge（此後端無法執行 JS）")
                 raise RuntimeError(f"{resp.status_code} for {url}")
-            resp.encoding = "utf-8"
-            return resp.text
+            if looks_like_challenge(html):
+                raise BlockedError("Cloudflare challenge（回 200 但內容是挑戰頁）")
+            return html
+        except BlockedError:
+            raise  # 重試同一後端沒用，直接讓上層換後端
         except Exception as err:  # 巴哈偶爾 5xx／連線抖動，重試即可
             last_err = err
             if attempt < retries - 1:
@@ -192,11 +207,110 @@ def parse_card(card) -> dict | None:
     return item
 
 
-def scrape_all(session) -> dict[str, dict]:
+# 抹掉 headless Chromium 最明顯的自動化痕跡。Cloudflare 的 JS 會讀這些欄位。
+STEALTH_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
+Object.defineProperty(navigator, 'languages', {get: () => ['zh-TW', 'zh', 'en-US', 'en']});
+Object.defineProperty(navigator, 'plugins', {
+  get: () => [1, 2, 3, 4, 5].map(i => ({name: 'Plugin ' + i})),
+});
+Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
+Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+window.chrome = window.chrome || {runtime: {}, app: {}, csi: () => {}, loadTimes: () => {}};
+const origQuery = window.navigator.permissions && window.navigator.permissions.query;
+if (origQuery) {
+  window.navigator.permissions.query = (params) =>
+    params.name === 'notifications'
+      ? Promise.resolve({state: Notification.permission})
+      : origQuery(params);
+}
+"""
+
+
+class PlaywrightFetcher:
+    """跑真的 Chromium 去執行 Cloudflare 的 JS challenge。
+
+    curl_cffi 只能偽裝 TLS 指紋，過不了需要執行 JavaScript 的 Managed
+    Challenge；這個後端開真的瀏覽器，等 challenge 自己解完再取內容。
+    """
+
+    def __enter__(self) -> "PlaywrightFetcher":
+        from playwright.sync_api import sync_playwright
+
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(
+            headless=os.getenv("HEADLESS", "true").lower() == "true",
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--lang=zh-TW",
+            ],
+        )
+        # UA 版本跟著實際 Chromium 走，寫死容易和指紋對不上
+        version = self._browser.version.split()[-1]
+        user_agent = (
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            f"(KHTML, like Gecko) Chrome/{version} Safari/537.36"
+        )
+        print(f"Playwright 瀏覽器：Chromium {version}")
+
+        self._context = self._browser.new_context(
+            user_agent=user_agent,
+            locale="zh-TW",
+            timezone_id="Asia/Taipei",
+            viewport={"width": 1920, "height": 1080},
+            extra_http_headers={"Accept-Language": HEADERS["Accept-Language"]},
+        )
+        self._context.add_init_script(STEALTH_SCRIPT)
+        self._page = self._context.new_page()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        for closeable in (getattr(self, "_context", None), getattr(self, "_browser", None)):
+            try:
+                if closeable:
+                    closeable.close()
+            except Exception:
+                pass
+        try:
+            self._pw.stop()
+        except Exception:
+            pass
+
+    def get(self, url: str) -> str:
+        self._page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        try:
+            # challenge 過關後會自動跳轉回真正的頁面，商品卡出現就代表成功
+            self._page.wait_for_selector("a.items-card", timeout=CHALLENGE_TIMEOUT)
+        except Exception:
+            html = self._page.content()
+            self._dump_debug()
+            if looks_like_challenge(html):
+                raise BlockedError(f"challenge 未通過：{describe_error(html)}")
+            raise RuntimeError(f"等不到商品列表：{describe_error(html)}")
+        return self._page.content()
+
+    def _dump_debug(self) -> None:
+        """卡關時留下截圖與 HTML，workflow 會當成 artifact 上傳。"""
+        out = Path(__file__).resolve().parent / "debug"
+        try:
+            out.mkdir(exist_ok=True)
+            self._page.screenshot(path=str(out / "challenge.png"), full_page=True)
+            (out / "challenge.html").write_text(self._page.content(), encoding="utf-8")
+            print(f"::notice::已存除錯檔（截圖 + HTML）到 {out}")
+        except Exception as err:
+            print(f"::warning::存除錯檔失敗：{err}")
+
+
+def scrape_all(fetch_html) -> dict[str, dict]:
+    """fetch_html 是 (url) -> html 的 callable，讓不同後端可以共用解析邏輯。"""
     items: dict[str, dict] = {}
     page = 1
     while page <= MAX_PAGES:
-        html = fetch(LIST_URL.format(page=page), session)
+        html = fetch_html(LIST_URL.format(page=page))
         soup = BeautifulSoup(html, "html.parser")
         cards = soup.select("a.items-card")
         if not cards:
@@ -214,6 +328,43 @@ def scrape_all(session) -> dict[str, dict]:
         time.sleep(1)
 
     return items
+
+
+def scrape_with_fallback() -> dict[str, dict]:
+    """依序嘗試各後端，被 Cloudflare 擋下就換下一個。"""
+    plans = {
+        "auto": ["curl_cffi", "playwright"],
+        "curl_cffi": ["curl_cffi"],
+        "requests": ["requests"],
+        "playwright": ["playwright"],
+    }
+    backend = os.getenv("SCRAPER_BACKEND", "auto").lower()
+    plan = plans.get(backend)
+    if plan is None:
+        print(f"::warning::未知的 SCRAPER_BACKEND={backend}，改用 auto")
+        plan = plans["auto"]
+
+    last_err: Exception | None = None
+    for kind in plan:
+        print(f"--- 嘗試抓取後端：{kind} ---")
+        try:
+            if kind == "playwright":
+                with PlaywrightFetcher() as fetcher:
+                    return scrape_all(fetcher.get)
+            session = build_http_session(kind)
+            warm_up(session)
+            return scrape_all(lambda url: fetch(url, session))
+        except BlockedError as err:
+            print(f"::warning::{kind} 被擋下：{err}")
+            last_err = err
+        except ImportError as err:
+            print(f"::warning::{kind} 套件未安裝：{err}")
+            last_err = err
+        except Exception as err:
+            print(f"::warning::{kind} 失敗：{err}")
+            last_err = err
+
+    raise RuntimeError(f"所有抓取後端都失敗，最後的錯誤：{last_err}")
 
 
 # --------------------------------------------------------------------------- #
@@ -362,9 +513,12 @@ def main() -> int:
     notify_changes = os.getenv("NOTIFY_CHANGES", "true").lower() == "true"
     dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
 
-    scraper = build_scraper_session()
-    warm_up(scraper)
-    current = scrape_all(scraper)
+    try:
+        current = scrape_with_fallback()
+    except Exception as err:
+        print(f"::error::{err}")
+        return 1
+
     session = requests.Session()  # Discord 用普通 requests 即可
     if not current:
         print("::error::沒有解析到任何商品，可能是網站改版或被擋；保留舊狀態不覆蓋")
