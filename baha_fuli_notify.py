@@ -333,7 +333,8 @@ def scrape_all(fetch_html) -> dict[str, dict]:
 def scrape_with_fallback() -> dict[str, dict]:
     """依序嘗試各後端，被 Cloudflare 擋下就換下一個。"""
     plans = {
-        "auto": ["curl_cffi", "playwright"],
+        # requests 墊底：住宅／行動 IP 不會被 challenge，也不需要裝重量級後端
+        "auto": ["curl_cffi", "playwright", "requests"],
         "curl_cffi": ["curl_cffi"],
         "requests": ["requests"],
         "playwright": ["playwright"],
