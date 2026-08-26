@@ -1,4 +1,4 @@
-name: 福利社商品推播
+name: BaHaNotify
 
 on:
   schedule:
