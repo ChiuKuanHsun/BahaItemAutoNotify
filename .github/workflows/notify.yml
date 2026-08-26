@@ -1,0 +1,76 @@
+name: 福利社商品推播
+
+on:
+  schedule:
+    # 每 15 分鐘檢查一次（GitHub 排程有數分鐘誤差，屬正常現象）
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只印出結果、不推 Discord"
+        type: boolean
+        default: false
+      reset_state:
+        description: "清空快照，下次執行重新建立基準"
+        type: boolean
+        default: false
+
+# 讓 workflow 能把 data/seen.json 推回 repo
+permissions:
+  contents: write
+
+# 排程若塞車，避免兩個 run 同時改狀態檔
+concurrency:
+  group: baha-fuli-notify
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 重設狀態
+        if: inputs.reset_state
+        run: rm -f data/seen.json
+
+      - name: 檢查並推播
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+          NOTIFY_CHANGES: "true"
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: python baha_fuli_notify.py
+
+      - name: 保存快照
+        if: success() && !inputs.dry_run
+        run: |
+          if [ -z "$(git status --porcelain data/seen.json)" ]; then
+            echo "快照沒變動，不需 commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/seen.json
+          git commit -m "chore: 更新福利社商品快照 [skip ci]"
+          # 排程重疊時遠端可能已被更新，rebase 後再推
+          for attempt in 1 2 3; do
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && \
+              git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            echo "推送失敗，第 ${attempt} 次重試"
+            sleep 5
+          done
+          exit 1
