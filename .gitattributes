@@ -1,0 +1,4 @@
+# shell 腳本一律 LF：帶 CRLF 到 Termux/Linux 會讓 shebang 變成 bash^M 直接失敗
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
