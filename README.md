@@ -78,6 +78,8 @@ DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." python baha_fuli_noti
 | `NOTIFY_CHANGES` | `true` | 是否推播「異動」；只想收新品就設 `false` |
 | `DRY_RUN` | `false` | 只印出結果不送 Discord |
 | `MAX_PAGES` | `20` | 最多翻幾頁，防呆用 |
+| `SCRAPER_BACKEND` | `auto` | `auto`／`curl_cffi`／`requests`，抓取後端 |
+| `IMPERSONATE` | `chrome` | curl_cffi 模擬的瀏覽器指紋 |
 
 ## 手動執行選項
 
@@ -90,5 +92,10 @@ Actions → Run workflow 時可勾：
 
 - **排程會延遲**：GitHub 的 `schedule` 在尖峰時常延後數分鐘到十幾分鐘，屬正常現象；想更即時要改用常駐主機。
 - **repo 閒置 60 天排程會被停用**：本專案每次有更新就會 commit 快照，正常運作下不會觸發；真的被停用時 GitHub 會寄信，去 Actions 頁面按 enable 即可。
+- **Cloudflare 403**：`fuli.gamer.com.tw` 在 Cloudflare 後面，會依 IP 信譽 + TLS 指紋擋非瀏覽器
+  流量。GitHub Actions 是資料中心 IP，用普通 `requests` 打會直接吃 403，所以預設改用
+  `curl_cffi` 模擬 Chrome 的 TLS/HTTP2 指紋。若哪天連 curl_cffi 也被擋（log 會印出 403
+  的回應內容），可試著把 repo variable `IMPERSONATE` 換成 `chrome131`、`safari` 等其他
+  指紋；再不行就只能改用非資料中心 IP 的環境（自架 self-hosted runner、家裡的機器排程）。
 - **只監控「現有商品」**（`history=0`）。想改監控歷史商品，把 `LIST_URL` 的 `history` 改成 `1`。
 - **網站改版時**：script 解析不到任何商品會直接 exit 1 並保留舊快照，不會把空狀態寫進去，也不會洗版。修 `parse_card()` 的 CSS selector 即可。

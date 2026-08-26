@@ -27,11 +27,16 @@ REQUEST_TIMEOUT = 30
 TPE = timezone(timedelta(hours=8))
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
     ),
-    "Accept-Language": "zh-TW,zh;q=0.9",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
 }
 
 # 會觸發「異動通知」的欄位（人氣一直在跳，不列入比對）
@@ -55,18 +60,66 @@ DEFAULT_COLOR = 0x5865F2
 # --------------------------------------------------------------------------- #
 # 抓取與解析
 # --------------------------------------------------------------------------- #
-def fetch(url: str, session: requests.Session, retries: int = 3) -> str:
+def build_scraper_session():
+    """建立抓取用的 session。
+
+    fuli.gamer.com.tw 掛在 Cloudflare 後面，會用 TLS 指紋 + IP 信譽判斷是不是
+    瀏覽器。用普通 requests 從 GitHub Actions（資料中心 IP）打會吃 403，
+    所以優先用 curl_cffi 模擬 Chrome 的 TLS/HTTP2 指紋。
+    """
+    backend = os.getenv("SCRAPER_BACKEND", "auto").lower()
+
+    if backend in ("auto", "curl_cffi"):
+        try:
+            from curl_cffi import requests as curl_requests
+
+            session = curl_requests.Session(
+                impersonate=os.getenv("IMPERSONATE", "chrome")
+            )
+            print("抓取後端：curl_cffi（模擬 Chrome）")
+            return session
+        except ImportError:
+            if backend == "curl_cffi":
+                raise SystemExit("指定了 curl_cffi 後端但套件沒安裝")
+            print("::warning::curl_cffi 未安裝，退回 requests（雲端 IP 可能被 403）")
+
+    print("抓取後端：requests")
+    session = requests.Session()
+    # curl_cffi 會自帶與 TLS 指紋一致的 UA；requests 得自己補，否則直接 403
+    session.headers["User-Agent"] = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    return session
+
+
+def warm_up(session) -> None:
+    """先進首頁拿 cookie，讓後續請求看起來像正常瀏覽流程。"""
+    try:
+        session.get(BASE_URL, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        time.sleep(1)
+    except Exception as err:  # 暖身失敗不致命，繼續抓正題
+        print(f"::warning::首頁暖身失敗（不影響後續嘗試）：{err}")
+
+
+def fetch(url: str, session, retries: int = 3) -> str:
     last_err = None
+    headers = dict(HEADERS, Referer=BASE_URL)
+
     for attempt in range(retries):
         try:
-            resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
+            resp = session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+            if resp.status_code >= 400:
+                # 印一段 body 方便判斷是 Cloudflare 擋還是站方改版
+                snippet = clean(resp.text)[:300] if resp.text else "(空)"
+                print(f"::warning::{url} 回應 {resp.status_code}：{snippet}")
+                raise RuntimeError(f"{resp.status_code} for {url}")
             resp.encoding = "utf-8"
             return resp.text
-        except requests.RequestException as err:  # 巴哈偶爾 5xx，重試即可
+        except Exception as err:  # 巴哈偶爾 5xx／連線抖動，重試即可
             last_err = err
             if attempt < retries - 1:
-                time.sleep(2 * (attempt + 1))
+                time.sleep(3 * (attempt + 1))
     raise RuntimeError(f"抓取失敗 {url}: {last_err}")
 
 
@@ -129,7 +182,7 @@ def parse_card(card) -> dict | None:
     return item
 
 
-def scrape_all(session: requests.Session) -> dict[str, dict]:
+def scrape_all(session) -> dict[str, dict]:
     items: dict[str, dict] = {}
     page = 1
     while page <= MAX_PAGES:
@@ -299,8 +352,10 @@ def main() -> int:
     notify_changes = os.getenv("NOTIFY_CHANGES", "true").lower() == "true"
     dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
 
-    session = requests.Session()
-    current = scrape_all(session)
+    scraper = build_scraper_session()
+    warm_up(scraper)
+    current = scrape_all(scraper)
+    session = requests.Session()  # Discord 用普通 requests 即可
     if not current:
         print("::error::沒有解析到任何商品，可能是網站改版或被擋；保留舊狀態不覆蓋")
         return 1

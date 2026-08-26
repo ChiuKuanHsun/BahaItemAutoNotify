@@ -53,6 +53,10 @@ jobs:
           DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
           NOTIFY_CHANGES: "true"
           DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+          # 巴哈掛 Cloudflare，會擋資料中心 IP + 非瀏覽器 TLS 指紋，
+          # 所以預設用 curl_cffi 模擬 Chrome。可用 repo variable 覆寫成 requests。
+          SCRAPER_BACKEND: ${{ vars.SCRAPER_BACKEND || 'auto' }}
+          IMPERSONATE: ${{ vars.IMPERSONATE || 'chrome' }}
         run: python baha_fuli_notify.py
 
       - name: 保存快照
