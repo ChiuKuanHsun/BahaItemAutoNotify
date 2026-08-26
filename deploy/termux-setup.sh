@@ -7,11 +7,14 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
 echo "==> 安裝系統套件"
-pkg update -y
+# -o 那串避免遇到設定檔衝突時停下來等人回答（腳本是非互動的）
+pkg update -y -o Dpkg::Options::=--force-confold
 pkg install -y python git cronie termux-services
+# 新版 Termux 把 pip 拆成獨立套件，舊版隨 python 附帶，所以失敗也不當錯誤
+pkg install -y python-pip 2>/dev/null || true
 
 echo "==> 安裝 Python 套件（只要 requests + beautifulsoup4）"
-pip install --upgrade pip
+# 注意：Termux 禁止 pip install --upgrade pip，會破壞它的 python-pip 套件
 pip install -r requirements.txt
 
 echo "==> 準備設定檔"
