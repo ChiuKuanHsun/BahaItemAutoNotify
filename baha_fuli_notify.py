@@ -533,8 +533,9 @@ def main() -> int:
     print(f"新增 {len(added)}／異動 {len(changed)}／下架 {len(removed)}")
 
     if first_run:
-        # 首次執行只建立基準，不把整頁商品當成「新上架」洗版
-        save_state(current)
+        # 首次執行只建立基準，不把整頁商品當成「新上架」洗版。
+        # 先送再存：webhook 沒設好時 send 會拋錯，快照就不會寫下去，
+        # 下次執行仍算首次，不必手動刪 seen.json。
         if not dry_run:
             send(
                 session,
@@ -542,6 +543,7 @@ def main() -> int:
                 "之後只推播新增與異動。",
                 [],
             )
+        save_state(current)
         print("首次執行：已建立基準快照")
         return 0
 
@@ -573,4 +575,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as err:
+        # cron 的 log 只要一行看得懂的訊息；要完整 traceback 就設 DEBUG=true
+        print(f"::error::{type(err).__name__}: {err}")
+        if os.getenv("DEBUG", "").lower() == "true":
+            raise
+        sys.exit(1)

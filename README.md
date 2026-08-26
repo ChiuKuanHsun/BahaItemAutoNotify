@@ -191,10 +191,23 @@ GitHub Actions 一樣的 Cloudflare 挑戰頁。要找住宅／機房白名單 I
 | `CHALLENGE_TIMEOUT_MS` | `45000` | 等 Cloudflare challenge 解完的上限 |
 | `HEADLESS` | `true` | 設 `false` 可在本機看瀏覽器實際跑什麼 |
 | `WAKE_LOCK` | `true` | 執行期間是否抓 wake lock；設 `false` 最省電但延遲較大 |
+| `DEBUG` | `false` | 設 `true` 讓錯誤印出完整 traceback |
 
 ## 疑難排解
 
 **沒收到任何推播** — 先看 `logs/notify.log`，正常沒更新時會印「沒有更新，結束」。
+
+**想重新建立基準／重測 webhook** — 刪掉快照再跑一次：
+
+```bash
+rm data/seen.json && bash deploy/run.sh && tail -20 logs/notify.log
+```
+
+**只想確認 webhook 通不通，不動狀態** —
+
+```bash
+. ./.env && curl -H 'Content-Type: application/json' \n  -d '{"content":"測試"}' "$DISCORD_WEBHOOK_URL"
+```
 
 **排程沒在跑** — `sv status crond` 確認服務活著；十之八九是電池優化沒關。
 
