@@ -30,7 +30,14 @@ chmod +x deploy/run.sh
 echo "==> 啟用 cron 服務"
 # shellcheck disable=SC1091
 [ -f "$PREFIX/etc/profile.d/start-services.sh" ] && . "$PREFIX/etc/profile.d/start-services.sh"
-sv-enable crond 2>/dev/null || echo "crond 稍後會由 termux-services 啟動"
+NEED_RESTART=0
+if sv-enable crond 2>/dev/null && sv up crond 2>/dev/null; then
+  echo "crond 已啟用"
+else
+  # termux-services 首次安裝時服務目錄還沒建立，一定要重開 session 才會有
+  NEED_RESTART=1
+  echo "crond 還沒就緒（termux-services 首次安裝需要重開 Termux）"
+fi
 
 INTERVAL="${INTERVAL_MINUTES:-15}"
 # 限制執行時段可以直接省電，例如 ACTIVE_HOURS="8-23" 半夜就不跑
@@ -65,3 +72,18 @@ cat <<'TIPS'
      chmod +x ~/.termux/boot/start-cron.sh
 =========================================================
 TIPS
+
+if [ "$NEED_RESTART" = "1" ]; then
+  cat <<'RESTART'
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ crond 尚未啟動，排程還不會跑。
+ 請「完全關閉 Termux」（從最近工作清單滑掉）再重新開啟，
+ 然後執行：
+
+   sv-enable crond && sv up crond && sv status crond
+
+ 看到 run: crond: (pid xxxxx) 就成功了。
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+RESTART
+fi
