@@ -102,6 +102,18 @@ def warm_up(session) -> None:
         print(f"::warning::首頁暖身失敗（不影響後續嘗試）：{err}")
 
 
+def describe_error(html: str) -> str:
+    """把錯誤頁轉成純文字，才看得出站方到底說了什麼（HTML 標籤會塞爆 log）。"""
+    if not html:
+        return "(空回應)"
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    title = clean(soup.title.get_text()) if soup.title else ""
+    body = clean(soup.get_text(" "))
+    return f"[{title}] {body}"[:800]
+
+
 def fetch(url: str, session, retries: int = 3) -> str:
     last_err = None
     headers = dict(HEADERS, Referer=BASE_URL)
@@ -110,9 +122,7 @@ def fetch(url: str, session, retries: int = 3) -> str:
         try:
             resp = session.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
             if resp.status_code >= 400:
-                # 印一段 body 方便判斷是 Cloudflare 擋還是站方改版
-                snippet = clean(resp.text)[:300] if resp.text else "(空)"
-                print(f"::warning::{url} 回應 {resp.status_code}：{snippet}")
+                print(f"::warning::{url} 回應 {resp.status_code}：{describe_error(resp.text)}")
                 raise RuntimeError(f"{resp.status_code} for {url}")
             resp.encoding = "utf-8"
             return resp.text
