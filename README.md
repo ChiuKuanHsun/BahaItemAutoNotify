@@ -52,7 +52,8 @@ bash deploy/termux-setup.sh
 ```
 
 腳本會裝好套件、從範本建立 `.env`、啟用 cron 並加好排程（預設每 15 分鐘）。
-想改間隔就 `INTERVAL_MINUTES=5 bash deploy/termux-setup.sh`。
+想改間隔就 `INTERVAL_MINUTES=5 bash deploy/termux-setup.sh`；
+想半夜不跑就加 `ACTIVE_HOURS="8-23"`（見〈[耗電](#耗電)〉）。
 
 ### 3. 填 Discord Webhook
 
@@ -75,12 +76,13 @@ bash deploy/run.sh && tail -20 logs/notify.log
 
   ```bash
   mkdir -p ~/.termux/boot
-  printf '#!/data/data/com.termux/files/usr/bin/sh\ntermux-wake-lock\nsv-enable crond\n' \
+  printf '#!/data/data/com.termux/files/usr/bin/sh\nsv-enable crond\n' \
     > ~/.termux/boot/start-cron.sh
   chmod +x ~/.termux/boot/start-cron.sh
   ```
 
-`deploy/run.sh` 每次執行都會抓 wake lock，避免抓到一半手機睡著把程序凍住。
+`deploy/run.sh` 只在**執行的那幾秒**抓 wake lock，跑完立刻釋放，不會常駐持有。
+開機腳本刻意不抓 wake lock —— 常駐持有會阻止 CPU 深度睡眠，那才是真正的耗電來源。
 
 ### 日常操作
 
@@ -90,6 +92,39 @@ crontab -l                  # 確認排程還在
 crontab -e                  # 改間隔
 sv status crond             # 確認 cron 服務活著
 ```
+
+## 耗電
+
+會增加，但正常設定下幅度很小。拆開來看：
+
+**執行本身很輕。** 每次就是啟動一次 Python、抓兩頁 HTML（約 50 KB）、比對、大多數
+情況下不送任何東西，數秒內結束。以 15 分鐘一次算，一天 96 次，累積 CPU 時間大概
+只有幾分鐘，比一個聊天 app 在背景同步還少。
+
+**真正的變數是有沒有阻止手機深度睡眠。** Android 的 Doze 模式會在螢幕關閉後大幅
+壓低喚醒頻率，若持續持有 wake lock 把它擋掉，待機耗電可能翻倍 —— 這跟你跑什麼程式
+無關，純粹是不讓 CPU 睡。本專案只在執行期間持有幾秒，所以不會有這個問題。
+
+反過來說，這代表 **cron 不保證準時**：手機深睡時排程可能被延後到系統的喚醒窗口，
+實際間隔會比設定值長一些。這是省電與即時性的取捨，想更準時就得付出待機電量。
+
+### 三個省電旋鈕
+
+```bash
+# 1. 拉長間隔（影響最直接）
+crontab -e        # 把 */15 改成 */30
+
+# 2. 限制時段，半夜不跑（少掉約 1/3 執行次數）
+ACTIVE_HOURS="8-23" bash deploy/termux-setup.sh
+
+# 3. 完全不抓 wake lock，讓系統自由排程（最省電，但延遲最大）
+echo 'WAKE_LOCK=false' >> .env
+```
+
+### 實測方法
+
+跑一兩天後看 Android 設定 → 電池 → 用量，找 Termux 那一欄。如果佔比明顯偏高，
+八成是別的東西持有 wake lock，用 `termux-wake-unlock` 手動釋放看看。
 
 ## 之後搬到伺服器
 
@@ -155,6 +190,7 @@ GitHub Actions 一樣的 Cloudflare 挑戰頁。要找住宅／機房白名單 I
 | `IMPERSONATE` | `chrome` | curl_cffi 模擬的瀏覽器指紋 |
 | `CHALLENGE_TIMEOUT_MS` | `45000` | 等 Cloudflare challenge 解完的上限 |
 | `HEADLESS` | `true` | 設 `false` 可在本機看瀏覽器實際跑什麼 |
+| `WAKE_LOCK` | `true` | 執行期間是否抓 wake lock；設 `false` 最省電但延遲較大 |
 
 ## 疑難排解
 

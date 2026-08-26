@@ -30,9 +30,11 @@ echo "==> 啟用 cron 服務"
 sv-enable crond 2>/dev/null || echo "crond 稍後會由 termux-services 啟動"
 
 INTERVAL="${INTERVAL_MINUTES:-15}"
-ENTRY="*/$INTERVAL * * * * $PROJECT_DIR/deploy/run.sh"
+# 限制執行時段可以直接省電，例如 ACTIVE_HOURS="8-23" 半夜就不跑
+HOURS="${ACTIVE_HOURS:-*}"
+ENTRY="*/$INTERVAL $HOURS * * * $PROJECT_DIR/deploy/run.sh"
 
-echo "==> 設定排程（每 $INTERVAL 分鐘）"
+echo "==> 設定排程（每 $INTERVAL 分鐘，時段 $HOURS）"
 if crontab -l 2>/dev/null | grep -qF "$PROJECT_DIR/deploy/run.sh"; then
   echo "排程已存在，跳過"
 else
@@ -55,7 +57,7 @@ cat <<'TIPS'
 4. 想要開機自動啟動，去 F-Droid 裝 Termux:Boot，
    然後建立開機腳本：
      mkdir -p ~/.termux/boot
-     printf '#!/data/data/com.termux/files/usr/bin/sh\ntermux-wake-lock\nsv-enable crond\n' \
+     printf '#!/data/data/com.termux/files/usr/bin/sh\nsv-enable crond\n' \
        > ~/.termux/boot/start-cron.sh
      chmod +x ~/.termux/boot/start-cron.sh
 =========================================================

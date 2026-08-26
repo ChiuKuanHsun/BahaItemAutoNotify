@@ -20,15 +20,21 @@ fi
 mkdir -p logs
 LOG="logs/notify.log"
 
-# 抓 wake lock，避免抓到一半手機睡著把程序凍住（沒有此指令就跳過）
-command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
+# 抓 wake lock，避免抓到一半手機睡著把程序凍住。
+# 只在執行期間持有（幾秒），結束就放掉；設 WAKE_LOCK=false 可完全不抓。
+RELEASE_LOCK=0
+if [ "${WAKE_LOCK:-true}" = "true" ] && command -v termux-wake-lock >/dev/null 2>&1; then
+  termux-wake-lock
+  RELEASE_LOCK=1
+fi
 
 echo "===== $(date '+%Y-%m-%d %H:%M:%S') =====" >>"$LOG"
 python baha_fuli_notify.py >>"$LOG" 2>&1
 status=$?
 [ "$status" -ne 0 ] && echo "!!! 結束碼 $status" >>"$LOG"
 
-command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock
+# 只釋放自己抓的，避免把別人（例如開機腳本）持有的 lock 誤放掉
+[ "$RELEASE_LOCK" = "1" ] && termux-wake-unlock
 
 # log 只留最後 2000 行，免得長期跑爆手機空間
 if [ "$(wc -l <"$LOG")" -gt 2000 ]; then
