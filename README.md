@@ -84,6 +84,23 @@ bash deploy/run.sh && tail -20 logs/notify.log
 `deploy/run.sh` 只在**執行的那幾秒**抓 wake lock，跑完立刻釋放，不會常駐持有。
 開機腳本刻意不抓 wake lock —— 常駐持有會阻止 CPU 深度睡眠，那才是真正的耗電來源。
 
+### 重開機之後
+
+`run.sh` 只是手動抓一次，**不會讓排程恢復**。重開機後要恢復的是 crond 服務，
+但你不用下任何指令 —— **打開 Termux app 就好**：`sv-enable crond` 的設定寫在磁碟上，
+Termux 每次開 session 會自動把已 enable 的服務帶起來，crontab 條目也是持久的。
+
+沒裝 Termux:Boot 的代價就只是「每次重開機要記得開一次 Termux」。確認方式：
+
+```bash
+sv status crond     # 出現 run: crond: (pid xxxx) 就正常
+```
+
+⚠️ 開了之後**別把 Termux 從最近工作清單滑掉**，滑掉等於殺掉程序，crond 會一起死。
+
+錯過的排程不會補跑，但影響有限：`seen.json` 還在，恢復後只要商品還在架上就會被認出是
+沒看過的 `sn` 並通知；只有「那段期間內上架又下架」的才會真的漏掉。
+
 ### 日常操作
 
 ```bash
